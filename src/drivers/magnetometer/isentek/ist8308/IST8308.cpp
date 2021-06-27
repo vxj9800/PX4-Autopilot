@@ -86,7 +86,7 @@ void IST8308::print_status()
 
 int IST8308::probe()
 {
-	_retries = 2;
+	_retries = 1;
 
 	for (int retry = 0; retry < 3; retry++) {
 		const uint8_t WAI = RegisterRead(Register::WAI);

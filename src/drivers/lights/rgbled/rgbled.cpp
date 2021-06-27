@@ -146,7 +146,7 @@ RGBLED::probe()
 	 */
 
 	unsigned prevretries = _retries;
-	_retries = 4;
+	_retries = 3;
 
 	if ((ret = get(on, powersave, r, g, b)) != OK ||
 	    (ret = send_led_enable(false) != OK) ||

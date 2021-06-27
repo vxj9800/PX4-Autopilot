@@ -51,7 +51,7 @@ LidarLiteI2C::LidarLiteI2C(I2CSPIBusOption bus_option, const int bus, const uint
 	_px4_rangefinder.set_max_distance(LL40LS_MAX_DISTANCE);
 	_px4_rangefinder.set_fov(0.008); // Divergence 8 mRadian
 	// up the retries since the device misses the first measure attempts
-	_retries = 3;
+	_retries = 1;
 
 	_px4_rangefinder.set_device_type(DRV_DIST_DEVTYPE_LL40LS); /// TODO
 }
@@ -127,7 +127,7 @@ LidarLiteI2C::probe()
 	uint8_t id_low = 0;
 
 	// more retries for detection
-	_retries = 10;
+	_retries = 1;
 
 	for (uint8_t i = 0; i < sizeof(addresses); i++) {
 
@@ -169,7 +169,7 @@ LidarLiteI2C::probe()
 				}
 			}
 
-			_retries = 3;
+			_retries = 1;
 			return OK;
 		}
 

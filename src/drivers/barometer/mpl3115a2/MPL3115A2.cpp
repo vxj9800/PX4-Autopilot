@@ -87,7 +87,7 @@ int MPL3115A2::init()
 
 int MPL3115A2::probe()
 {
-	_retries = 10;
+	_retries = 1;
 	uint8_t whoami = 0;
 
 	if ((RegisterRead(MPL3115A2_REG_WHO_AM_I, &whoami) > 0) && (whoami == MPL3115A2_WHO_AM_I)) {

@@ -79,7 +79,7 @@ TERARANGER::TERARANGER(I2CSPIBusOption bus_option, const int bus, const uint8_t 
 	_px4_rangefinder(get_device_id(), rotation)
 {
 	// up the retries since the device misses the first measure attempts
-	I2C::_retries = 3;
+	I2C::_retries = 1;
 
 	_px4_rangefinder.set_device_type(DRV_DIST_DEVTYPE_TERARANGER);
 	_px4_rangefinder.set_rangefinder_type(distance_sensor_s::MAV_DISTANCE_SENSOR_LASER);

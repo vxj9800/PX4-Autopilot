@@ -188,7 +188,7 @@ BST::BST(I2CSPIBusOption bus_option, const int bus, int address, int bus_frequen
 int BST::probe()
 {
 	int retries_prev = _retries;
-	_retries = 3;
+	_retries = 1;
 
 	BSTPacket<BSTDeviceInfoRequest> dev_info_req = {};
 	dev_info_req.type = 0x0A;

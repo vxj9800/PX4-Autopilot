@@ -144,7 +144,7 @@ MS5611_I2C::ioctl(unsigned operation, unsigned &arg)
 int
 MS5611_I2C::probe()
 {
-	_retries = 10;
+	_retries = 1;
 
 	if ((PX4_OK == _probe_address(MS5611_ADDRESS_1)) ||
 	    (PX4_OK == _probe_address(MS5611_ADDRESS_2))) {
@@ -186,7 +186,7 @@ MS5611_I2C::_reset()
 	int		result;
 
 	/* bump the retry count */
-	_retries = 10;
+	_retries = 3;
 	result = transfer(&cmd, 1, nullptr, 0);
 	_retries = old_retrycount;
 
