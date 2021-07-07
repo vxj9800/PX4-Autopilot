@@ -48,7 +48,7 @@
 
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/home_position.h>
-#include <uORB/topics/rtl_flight_time.h>
+#include <uORB/topics/rtl_time_estimate.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/wind.h>
 #include <matrix/math.hpp>
@@ -108,8 +108,8 @@ private:
 	 */
 	void advance_rtl();
 
-
 	float calculate_return_alt_from_cone_half_angle(float cone_half_angle_deg);
+	void calc_and_pub_rtl_time_estimate();
 
 	enum RTLState {
 		RTL_STATE_NONE = 0,
@@ -173,7 +173,7 @@ private:
 	param_t _param_rtl_descent_speed{PARAM_INVALID};
 
 	uORB::SubscriptionData<wind_s>		_wind_sub{ORB_ID(wind)};
-	uORB::Publication<rtl_flight_time_s>		_rtl_flight_time_pub{ORB_ID(rtl_flight_time)};
+	uORB::Publication<rtl_time_estimate_s> _rtl_time_estimate_pub{ORB_ID(rtl_time_estimate)};
 };
 
 float time_to_home(const matrix::Vector3f &to_home_vec,

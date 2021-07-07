@@ -3663,10 +3663,9 @@ void Commander::battery_status_check()
 	// To make sure that all connected batteries are being regularly reported, we check which one has the
 	// oldest timestamp.
 	hrt_abstime oldest_update = hrt_absolute_time();
+	float worst_battery_time_s{-1.f};
 
 	_battery_current = 0.0f;
-	float battery_level = 0.0f;
-
 
 	// Only iterate over connected batteries. We don't care if a disconnected battery is not regularly publishing.
 	for (size_t i = 0; i < num_connected_batteries; i++) {
@@ -3678,37 +3677,37 @@ void Commander::battery_status_check()
 			oldest_update = batteries[i].timestamp;
 		}
 
+		if (batteries[i].time_remaining_s > 0.f
+		    && (worst_battery_time_s < 0.f || batteries[i].time_remaining_s < worst_battery_time_s)) {
+			worst_battery_time_s = batteries[i].time_remaining_s;
+		}
+
 		// Sum up current from all batteries.
 		_battery_current += batteries[i].current_filtered_a;
-
-		// average levels from all batteries
-		battery_level += batteries[i].remaining;
 	}
 
-	battery_level /= num_connected_batteries;
+	rtl_time_estimate_s rtl_time_estimate{};
 
-	_rtl_flight_time_sub.update();
-	float battery_usage_to_home = 0;
+	// Compare estimate of RTL time to estimate of remaining flight time
+	if (_rtl_time_estimate_sub.copy(&rtl_time_estimate)
+	    && hrt_absolute_time() - rtl_time_estimate.timestamp < 2_s
+	    && rtl_time_estimate.valid
+	    && _armed.armed
+	    && !_rtl_time_actions_done
+	    && !(worst_battery_time_s < FLT_EPSILON)
+	    && rtl_time_estimate.safe_time_estimate >= worst_battery_time_s
+	    && _internal_state.main_state != commander_state_s::MAIN_STATE_AUTO_RTL
+	    && _internal_state.main_state != commander_state_s::MAIN_STATE_AUTO_LAND) {
+		// Try to trigger RTL
+		if (main_state_transition(_status, commander_state_s::MAIN_STATE_AUTO_RTL, _status_flags,
+					  _internal_state) == TRANSITION_CHANGED) {
+			mavlink_log_emergency(&_mavlink_log_pub, "Flight time low, returning to land");
 
-	if (hrt_absolute_time() - _rtl_flight_time_sub.get().timestamp < 2_s) {
-		battery_usage_to_home = _rtl_flight_time_sub.get().rtl_limit_fraction;
-	}
-
-	uint8_t battery_range_warning = battery_status_s::BATTERY_WARNING_NONE;
-
-	if (PX4_ISFINITE(battery_usage_to_home)) {
-		float battery_at_home = battery_level - battery_usage_to_home;
-
-		if (battery_at_home < _param_bat_crit_thr.get()) {
-			battery_range_warning =  battery_status_s::BATTERY_WARNING_CRITICAL;
-
-		} else if (battery_at_home < _param_bat_low_thr.get()) {
-			battery_range_warning = battery_status_s::BATTERY_WARNING_LOW;
+		} else {
+			mavlink_log_emergency(&_mavlink_log_pub, "Flight time low, land now!");
 		}
-	}
 
-	if (battery_range_warning > worst_warning) {
-		worst_warning = battery_range_warning;
+		_rtl_time_actions_done = true;
 	}
 
 	bool battery_warning_level_increased_while_armed = false;

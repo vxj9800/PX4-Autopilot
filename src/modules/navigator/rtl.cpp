@@ -70,22 +70,20 @@ void RTL::on_inactive()
 	// Reset RTL state.
 	_rtl_state = RTL_STATE_NONE;
 
-	find_RTL_destination();
+	// Limit inactive calculation to 1Hz
+	if ((hrt_absolute_time() - _destination_check_time) > 1_s) {
+		_destination_check_time = hrt_absolute_time();
+
+		if (_navigator->home_position_valid()) {
+			find_RTL_destination();
+		}
+
+		calc_and_pub_rtl_time_estimate();
+	}
 }
 
 void RTL::find_RTL_destination()
 {
-	// don't update RTL destination faster than 1 Hz
-	if (hrt_elapsed_time(&_destination_check_time) < 1_s) {
-		return;
-	}
-
-	if (!_navigator->home_position_valid()) {
-		return;
-	}
-
-	_destination_check_time = hrt_absolute_time();
-
 	// get home position:
 	home_position_s &home_landing_position = *_navigator->get_home_position();
 
@@ -214,24 +212,6 @@ void RTL::find_RTL_destination()
 			break;
 		}
 	}
-
-	// figure out how long the RTL will take
-	float rtl_xy_speed, rtl_z_speed;
-	get_rtl_xy_z_speed(rtl_xy_speed, rtl_z_speed);
-
-	matrix::Vector3f to_destination_vec;
-	get_vector_to_next_waypoint(global_position.lat, global_position.lon, _destination.lat, _destination.lon,
-				    &to_destination_vec(0), &to_destination_vec(1));
-	to_destination_vec(2) = _destination.alt - global_position.alt;
-
-	float time_to_home_s = time_to_home(to_destination_vec, get_wind(), rtl_xy_speed, rtl_z_speed);
-
-	float rtl_flight_time_ratio = time_to_home_s / (60 * _param_rtl_flt_time.get());
-	rtl_flight_time_s rtl_flight_time{};
-	rtl_flight_time.timestamp = hrt_absolute_time();
-	rtl_flight_time.rtl_limit_fraction = rtl_flight_time_ratio;
-	rtl_flight_time.rtl_time_s = time_to_home_s;
-	_rtl_flight_time_pub.publish(rtl_flight_time);
 }
 
 void RTL::on_activation()
@@ -711,27 +691,109 @@ matrix::Vector2f RTL::get_wind()
 	return wind;
 }
 
-float time_to_home(const matrix::Vector3f &to_home_vec,
-		   const matrix::Vector2f &wind_velocity, float vehicle_speed_m_s, float vehicle_descent_speed_m_s)
+void RTL::calc_and_pub_rtl_time_estimate()
 {
-	const matrix::Vector2f to_home = to_home_vec.xy();
-	const float alt_change = to_home_vec(2);
-	const matrix::Vector2f to_home_dir = to_home.unit_or_zero();
-	const float dist_to_home = to_home.norm();
+	rtl_time_estimate_s rtl_time_estimate{};
 
-	const float wind_towards_home = wind_velocity.dot(to_home_dir);
-	const float wind_across_home = matrix::Vector2f(wind_velocity - to_home_dir * wind_towards_home).norm();
+	// Calculate RTL time estimate only when there is a valid home position
+	// TODO: Also check if vehicle position is valid
+	if (!_navigator->home_position_valid()) {
+		rtl_time_estimate.valid = false;
 
-	// Note: use fminf so that we don't _rely_ on wind towards home to make RTL more efficient
-	const float cruise_speed = sqrtf(vehicle_speed_m_s * vehicle_speed_m_s - wind_across_home * wind_across_home) + fminf(
-					   0.f, wind_towards_home);
+	} else {
+		rtl_time_estimate.valid = true;
 
-	if (!PX4_ISFINITE(cruise_speed) || cruise_speed <= 0) {
-		return INFINITY; // we never reach home if the wind is stronger than vehicle speed
+		const vehicle_global_position_s &gpos = *_navigator->get_global_position();
+
+		// Sum up time estimate for various segments of the landing procedure
+		switch (_rtl_state) {
+		case RTL_STATE_NONE:
+		case RTL_STATE_CLIMB: {
+				// Climb segment is only relevant if the drone is below return altitude
+				const float climb_dist = gpos.alt < _rtl_alt ? (_rtl_alt - gpos.alt) : 0;
+
+				if (climb_dist > 0) {
+					rtl_time_estimate.time_estimate += climb_dist / _param_mpc_vel_z_auto.get();
+				}
+			}
+
+		// Fallthrough intented
+		case RTL_STATE_RETURN:
+
+			// Add cruise segment to home
+			rtl_time_estimate.time_estimate += get_distance_to_next_waypoint(
+					_return_location.lat, _return_location.lon,	gpos.lat, gpos.lon) / _param_mpc_xy_cruise.get();
+
+		// Fallthrough intented
+		case RTL_STATE_TRANSITION_TO_MC:
+		case RTL_STATE_DESCEND: {
+				// when descending, the target altitude is stored in the current mission item
+				float initial_altitude = 0;
+				float loiter_altitude = 0;
+
+				if (_rtl_state == RTL_STATE_DESCEND) {
+					// Take current vehicle altitude as the starting point for calculation
+					initial_altitude = gpos.alt;  // TODO: Check if this is in the right frame
+					loiter_altitude = _mission_item.altitude;  // Next waypoint = loiter
+
+
+				} else {
+					// Take the return altitude as the starting point for the calculation
+					initial_altitude = _rtl_alt; // CLIMB and RETURN
+					loiter_altitude = math::min(_return_location.alt + _param_descend_alt.get(), _rtl_alt);
+				}
+
+				// Add descend segment (first landing phase: return alt to loiter alt)
+				_rtl_time_estimate.time_estimate += fabsf(initial_altitude - loiter_altitude) /
+								    _param_mpc_vel_z_auto.get();
+			}
+
+		// Fallthrough intented
+		case RTL_STATE_LOITER:
+			// Add land delay (the short pause for deploying landing gear)
+			// TODO: Check if landing gear is deployed or not
+			_rtl_time_estimate.time_estimate += _param_land_delay.get();
+
+		case RTL_STATE_LAND: {
+				float initial_altitude;
+
+				// Add land segment (second landing phase) which comes after LOITER
+				if (_rtl_state == RTL_STATE_LAND) {
+					// If we are in this phase, use the current vehicle altitude  instead
+					// of the altitude paramteter to get a continous time estimate
+					initial_altitude = gpos.alt;
+
+
+				} else {
+					// If this phase is not active yet, simply use the loiter altitude,
+					// which is where the LAND phase will start
+					const float loiter_altitude = math::min(_return_location.alt + _param_descend_alt.get(), _rtl_alt);
+					initial_altitude = loiter_altitude;
+				}
+
+				// Prevent negative times when close to the ground
+				if (initial_altitude > _return_location.alt) {
+					_rtl_time_estimate.time_estimate += (initial_altitude - _return_location.alt) / _param_mpc_land_speed.get();
+				}
+
+			}
+
+			break;
+
+		case RTL_STATE_LANDED:
+			// Remaining time is 0
+			break;
+		}
+
+		// Prevent negative durations as phyiscally they make no sense. These can
+		// occur during the last phase of landing when close to the ground.
+		rtl_time_estimate.time_estimate = math::max(0.f, rtl_time_estimate.time_estimate);
+
+		// Use actual time estimate to compute the safer time estimate with additional scale factor and a margin
+		_rtl_time_estimate.safe_time_estimate = 1.1f * _rtl_time_estimate.time_estimate + 110.f;
 	}
 
-	// assume horizontal and vertical motions happen serially, so their time adds
-	float horiz = dist_to_home / cruise_speed;
-	float descent = fabsf(alt_change) / vehicle_descent_speed_m_s;
-	return horiz + descent;
+	// Publish message
+	rtl_time_estimate.timestamp = hrt_absolute_time();
+	_rtl_time_estimate_pub.publish(rtl_time_estimate);
 }
