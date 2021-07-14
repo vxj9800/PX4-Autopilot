@@ -88,7 +88,8 @@ jobs:
           px4_fmu-v6x_default,
           px4_io-v2_default,
           spracing_h7extreme_default,
-          uvify_core_default
+          uvify_core_default,
+          yuneec_mantis-g_default
           ]
     steps:
     - uses: actions/checkout@v1
