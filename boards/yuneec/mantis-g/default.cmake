@@ -35,7 +35,7 @@ px4_add_board(
 		pwm_input
 		pwm_out_sim
 		rc_input
-		#tap_esc # TODO: add
+		tap_esc # TODO: update
 		#telemetry # all available telemetry drivers
 		tone_alarm
 	MODULES
