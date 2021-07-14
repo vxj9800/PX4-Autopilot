@@ -14,8 +14,7 @@ px4_add_board(
 		#TEL4:/dev/ttyS3
 	DRIVERS
 		#adc # TODO: not sure what happened to this
-		# barometer # all available barometer drivers
-		# barometer/mpc2520 # TODO: add
+		barometer/mpc2520
 		batt_smbus
 		camera_capture
 		camera_trigger
