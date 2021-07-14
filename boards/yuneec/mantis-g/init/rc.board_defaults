@@ -3,4 +3,9 @@
 # board specific defaults
 #------------------------------------------------------------------------------
 
+param set-default SYS_AUTOSTART 4061
+
 safety_button start
+
+# Start esc
+#tap_esc start -d /dev/ttyS4 -n 4
