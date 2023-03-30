@@ -281,3 +281,8 @@ CONFIG:
       buildType: MinSizeRel
       settings:
         CONFIG: raspberrypi_pico_default
+    raspberrypi_openfc2040_default:
+      short: raspberrypi_openfc2040
+      buildType: MinSizeRel
+      settings:
+        CONFIG: raspberrypi_openfc2040_default

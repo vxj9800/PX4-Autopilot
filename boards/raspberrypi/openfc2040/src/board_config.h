@@ -83,7 +83,7 @@
  *
  *  VBUS detection is on 29  ADC_DPM0 and PTE8
  */
-#define GPIO_USB_VBUS_VALID     (24 | GPIO_FUN(RP2040_GPIO_FUNC_SIO))    // Used in usb.c
+#define GPIO_USB_VBUS_VALID     (29 | GPIO_FUN(RP2040_GPIO_FUNC_SIO))    // Used in usb.c
 
 /* PWM
  *
