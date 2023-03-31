@@ -297,7 +297,7 @@ rp2040_boardinitialize(void)
  *
  ****************************************************************************/
 
-// static struct spi_dev_s *spi1;
+static struct spi_dev_s *spi1;
 static struct spi_dev_s *spi2;
 
 __EXPORT int board_app_initialize(uintptr_t arg)
@@ -338,24 +338,24 @@ __EXPORT int board_app_initialize(uintptr_t arg)
 
 	/* Configure SPI-based devices */
 
-	// // SPI1: SDCard					// Will be configured later
-	// /* Get the SPI port for the microSD slot */
-	// spi1 = rp2040_spibus_initialize(CONFIG_NSH_MMCSDSPIPORTNO); // PX4_BUS_NUMBER_FROM_PX4(1)
+	// SPI1: SDCard
+	/* Get the SPI port for the microSD slot */
+	spi1 = rp2040_spibus_initialize(CONFIG_NSH_MMCSDSPIPORTNO); // PX4_BUS_NUMBER_FROM_PX4(1)
 
-	// if (!spi1) {
-	// 	syslog(LOG_ERR, "[boot] FAILED to initialize SPI port %d\n", CONFIG_NSH_MMCSDSPIPORTNO);
-	// 	led_off(LED_BLUE);
-	// }
+	if (!spi1) {
+		syslog(LOG_ERR, "[boot] FAILED to initialize SPI port %d\n", CONFIG_NSH_MMCSDSPIPORTNO);
+		led_off(LED_BLUE);
+	}
 
-	// /* Now bind the SPI interface to the MMCSD driver */
-	// int result = mmcsd_spislotinitialize(CONFIG_NSH_MMCSDMINOR, CONFIG_NSH_MMCSDSLOTNO, spi1);
+	/* Now bind the SPI interface to the MMCSD driver */
+	int result = mmcsd_spislotinitialize(CONFIG_NSH_MMCSDMINOR, CONFIG_NSH_MMCSDSLOTNO, spi1);
 
-	// if (result != OK) {
-	// 	led_off(LED_BLUE);
-	// 	syslog(LOG_ERR, "[boot] FAILED to bind SPI port 1 to the MMCSD driver\n");
-	// }
+	if (result != OK) {
+		led_off(LED_BLUE);
+		syslog(LOG_ERR, "[boot] FAILED to bind SPI port 1 to the MMCSD driver\n");
+	}
 
-	// up_udelay(20);
+	up_udelay(20);
 
 	// SPI2: LSM6DS3TR-C and DPS310XTSA1
 	spi2 = rp2040_spibus_initialize(PX4_BUS_NUMBER_FROM_PX4(2));
