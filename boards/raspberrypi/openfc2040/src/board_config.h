@@ -48,11 +48,19 @@
 #include <stdint.h>
 
 /* LEDs */
-// LED1 - GPIO 25 - Green
-#define GPIO_LED1       PX4_MAKE_GPIO_OUTPUT_CLEAR(25) // Take a look at rpi_common micro_hal.h
-#define GPIO_LED_BLUE   GPIO_LED1
+// Take a look at rpi_common micro_hal.h for gpio definitions
+#define GPIO_LED1	PX4_MAKE_GPIO_OUTPUT_SET(13)
+#define GPIO_LED2	PX4_MAKE_GPIO_OUTPUT_SET(14)
+#define GPIO_LED3	PX4_MAKE_GPIO_OUTPUT_SET(15)
 
-#define BOARD_OVERLOAD_LED     LED_BLUE
+#define GPIO_LED_RED                 GPIO_LED1
+#define GPIO_LED_GREEN               GPIO_LED2
+#define GPIO_LED_BLUE                GPIO_LED3
+
+#define BOARD_HAS_CONTROL_STATUS_LEDS 1
+#define BOARD_OVERLOAD_LED     LED_RED
+#define BOARD_ARMED_LED        LED_BLUE
+#define BOARD_ARMED_STATE_LED  LED_GREEN
 
 /*
  * ADC channels
