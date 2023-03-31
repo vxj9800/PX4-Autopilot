@@ -81,15 +81,14 @@
  * UARTs.
  * UART0TX: GPIO0
  * UART0RX: GPIO1
- * UART1TX: GPIO8
- * UART1RX: GPIO9
+ * UART1TX: GPIO4
+ * UART1RX: GPIO5
  */
 #define CONFIG_RP2040_UART0_GPIO	0	/* TELEM */
-
-#define CONFIG_RP2040_UART1_GPIO	8	/* GPS */
+#define CONFIG_RP2040_UART1_GPIO	4	/* GPS */
 
 /*
- * I2C (external)
+ * I2C (external for MAG)
  *
  * I2C1SCL: GPIO7
  * I2C1SDA: GPIO6
@@ -103,26 +102,26 @@
 
 /* SPI0:
  *  SPIDEV_FLASH (probably micro sd card)
- *  CS: GPIO5 -- should be configured in sec/spi.cpp (probably)
- *  CLK: GPIO2
- *  MISO: GPIO4
- *  MOSI: GPIO3
+ *  CS: GPIO17 -- should be configured in sec/spi.cpp (probably)
+ *  CLK: GPIO18
+ *  MISO: GPIO16
+ *  MOSI: GPIO19
  */
 
-#define GPIO_SPI0_SCLK  ( 2 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
-#define GPIO_SPI0_MISO ( 4 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
-#define GPIO_SPI0_MOSI ( 3 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
+#define GPIO_SPI0_SCLK  ( 18 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
+#define GPIO_SPI0_MISO ( 16 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
+#define GPIO_SPI0_MOSI ( 19 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
 
 /* SPI1:
- *  MPU9250 and BMP280
- *  CS: GPIO13 for MPU9250, GPIO14 for BMP280 -- should be configured in sec/spi.cpp (probably)
+ *  LSM6DS3TR-C(ACC & GYRO) and DPS310XTSA1(BARO)
+ *  CS: GPIO9 for LSM6DS3TR-C, GPIO12 for DPS310XTSA1 -- should be configured in sec/spi.cpp (probably)
  *  CLK: GPIO10
- *  MISO: GPIO12
+ *  MISO: GPIO8
  *  MOSI: GPIO11
  */
 
 #define GPIO_SPI1_SCLK	( 10 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
-#define GPIO_SPI1_MISO	( 12 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
+#define GPIO_SPI1_MISO	( 8 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
 #define GPIO_SPI1_MOSI	( 11 | GPIO_FUN(RP2040_GPIO_FUNC_SPI) )
 
 

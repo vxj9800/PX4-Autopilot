@@ -5,8 +5,8 @@
 
 board_adc start
 
-# try starting an mpu9250 IMU on external SPI
-mpu9250 start -S
+# try starting an LSM9DS1 (board actually has LSM6DS3TR-C, so change stuff eventually) IMU on SPI
+lsm9ds1 start -s
 
-# try starting a bmp280 barometer on external SPI
-bmp280 start -S
+# try starting DPS310XTSA1 barometer on SPI
+dps310 start -s
