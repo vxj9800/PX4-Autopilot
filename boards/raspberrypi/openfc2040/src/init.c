@@ -156,7 +156,7 @@ __EXPORT void board_on_reset(int status)
 
 int board_read_VBUS_state(void)
 {
-	return BOARD_ADC_USB_CONNECTED ? 0 : 1;
+	return px4_arch_gpioread(GPIO_USB_VBUS_VALID) ? 0 : 1;
 }
 
 /****************************************************************************
