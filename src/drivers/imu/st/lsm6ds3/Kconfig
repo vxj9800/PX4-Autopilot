@@ -1,0 +1,5 @@
+menuconfig DRIVERS_IMU_ST_LSM6DS3
+	bool "lsm6ds3"
+	default n
+	---help---
+		Enable support for lsm6ds3

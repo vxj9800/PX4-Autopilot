@@ -229,6 +229,9 @@
 #define DRV_INS_DEVTYPE_VN200 0xE2
 #define DRV_INS_DEVTYPE_VN300 0xE3
 
+// Added for STMicro IMU LSM6DS3
+#define DRV_IMU_DEVTYPE_ST_LSM6DS3_AG   0xE4
+
 #define DRV_DEVTYPE_UNUSED		0xff
 
 #endif /* _DRV_SENSOR_H */

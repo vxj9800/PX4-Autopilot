@@ -6,7 +6,7 @@
 board_adc start
 
 # try starting an LSM9DS1 (board actually has LSM6DS3TR-C, so change stuff eventually) IMU on SPI
-lsm9ds1 start -s
+lsm6ds3 start -s
 
 # try starting DPS310XTSA1 barometer on SPI
 dps310 start -s
