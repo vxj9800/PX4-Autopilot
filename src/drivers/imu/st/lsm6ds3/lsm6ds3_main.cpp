@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2020-2021 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2013-2021 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -31,12 +31,18 @@
  *
  ****************************************************************************/
 
+/**
+ * @file lsm6ds3_main.cpp
+ * Driver for the ST LSM6DS3 MEMS accelerometer / magnetometer connected via SPI.
+ */
+
 #include "LSM6DS3.hpp"
 
 #include <px4_platform_common/getopt.h>
 #include <px4_platform_common/module.h>
 
-void LSM6DS3::print_usage()
+void
+LSM6DS3::print_usage()
 {
 	PRINT_MODULE_USAGE_NAME("lsm6ds3", "driver");
 	PRINT_MODULE_USAGE_SUBCATEGORY("imu");
@@ -51,7 +57,7 @@ extern "C" int lsm6ds3_main(int argc, char *argv[])
 	int ch;
 	using ThisDriver = LSM6DS3;
 	BusCLIArguments cli{false, true};
-	cli.default_spi_frequency = SPI_SPEED;
+	cli.default_spi_frequency = 10 * 1000 * 1000;
 
 	while ((ch = cli.getOpt(argc, argv, "R:")) != EOF) {
 		switch (ch) {

@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2020-2021 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2013-2019 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -33,24 +33,120 @@
 
 /**
  * @file LSM6DS3.hpp
- *
- * Driver for the ST LSM6DS3 connected via SPI.
- *
+ * Driver for the ST LSM6DS3 MEMS accelerometer / gyroscope connected via SPI.
  */
 
 #pragma once
 
-#include "ST_LSM6DS3_Registers.hpp"
-
-#include <drivers/drv_hrt.h>
-#include <lib/drivers/accelerometer/PX4Accelerometer.hpp>
-#include <lib/drivers/device/spi.h>
-#include <lib/drivers/gyroscope/PX4Gyroscope.hpp>
-#include <lib/geo/geo.h>
-#include <lib/perf/perf_counter.h>
+#include <drivers/device/spi.h>
+#include <geo/geo.h>
+#include <perf/perf_counter.h>
 #include <px4_platform_common/i2c_spi_buses.h>
+#include <lib/drivers/accelerometer/PX4Accelerometer.hpp>
+#include <lib/drivers/gyroscope/PX4Gyroscope.hpp>
 
-using namespace ST_LSM6DS3;
+// Bit definitions
+static constexpr uint8_t Bit0 = (1 << 0);
+static constexpr uint8_t Bit1 = (1 << 1);
+static constexpr uint8_t Bit2 = (1 << 2);
+static constexpr uint8_t Bit3 = (1 << 3);
+static constexpr uint8_t Bit4 = (1 << 4);
+static constexpr uint8_t Bit5 = (1 << 5);
+static constexpr uint8_t Bit6 = (1 << 6);
+static constexpr uint8_t Bit7 = (1 << 7);
+
+/* SPI protocol address bits */
+#define DIR_READ			(1<<7)
+#define DIR_WRITE			(0<<7)
+
+/* register addresses: XL: accel, G: gyro, TEMP: temp */
+#define ADDR_WHO_AM_I			0x0F
+#define WHO_I_AM			0x6A
+
+#define CTRL1_XL	0x10	// Linear acceleration sensor, Control Register 1.
+#define CTRL2_G		0x11	// Angular rate sensor, Control Register 2.
+#define CTRL3_C		0x12 // Control register 3.
+#define CTRL4_C		0x13 // Control register 4.
+#define CTRL5_C		0x14 // Control register 5.
+#define CTRL6_C		0x15 // Control register 6.
+#define CTRL7_G		0x16	// Angular rate sensor, Control Register 7.
+#define CTRL8_XL	0x17 // Linear acceleration sensor, Control Register 8.
+#define CTRL9_XL	0x18 // Linear acceleration sensor, Control Register 9.
+#define CTRL10_C	0x19 // Control register 10.
+
+#define OUT_TEMP_L      0x20
+#define OUT_TEMP_H      0x21
+
+#define STATUS_REG	0x1E // Only one STATUS_REG as compared to lsm9ds1
+
+#define OUT_X_L_G       0x22
+#define OUT_X_H_G       0x23
+#define OUT_Y_L_G       0x24
+#define OUT_Y_H_G       0x25
+#define OUT_Z_L_G       0x26
+#define OUT_Z_H_G       0x27
+
+#define OUT_X_L_XL      0x28
+#define OUT_X_H_XL      0x29
+#define OUT_Y_L_XL      0x2A
+#define OUT_Y_H_XL      0x2B
+#define OUT_Z_L_XL      0x2C
+#define OUT_Z_H_XL      0x2D
+
+#define CTRL1_XL_ODR_XL_BITS	(Bit7 | Bit6 | Bit5 | Bit4)
+#define CTRL1_XL_ODR_XL_26Hz	(Bit5)
+#define CTRL1_XL_ODR_XL_52Hz	(Bit5 | Bit4)
+#define CTRL1_XL_ODR_XL_104Hz	(Bit6)
+#define CTRL1_XL_ODR_XL_208Hz	(Bit6 | Bit4)
+#define CTRL1_XL_ODR_XL_416Hz	(Bit6 | Bit5)
+#define CTRL1_XL_ODR_XL_833Hz	(Bit6 | Bit5 | Bit4)
+
+#define CTRL1_XL_FS_XL_BITS	(Bit3 | Bit2)
+#define CTRL1_XL_FS_XL_2g	(0)
+#define CTRL1_XL_FS_XL_4g	(Bit3)
+#define CTRL1_XL_FS_XL_8g	(Bit3 | Bit2)
+#define CTRL1_XL_FS_XL_16g	(Bit2)
+
+#define CTRL2_G_ODR_G_BITS	(Bit7 | Bit6 | Bit5 | Bit4)
+#define CTRL2_G_ODR_G_26Hz	(Bit5)
+#define CTRL2_G_ODR_G_52Hz	(Bit5 | Bit4)
+#define CTRL2_G_ODR_G_104Hz	(Bit6)
+#define CTRL2_G_ODR_G_208Hz	(Bit6 | Bit4)
+#define CTRL2_G_ODR_G_416Hz	(Bit6 | Bit5)
+#define CTRL2_G_ODR_G_833Hz	(Bit6 | Bit5 | Bit4)
+
+#define CTRL2_G_FS_G_BITS	(Bit3 | Bit2)
+#define CTRL2_G_FS_G_125dps	(Bit1)
+#define CTRL2_G_FS_G_250dps	(0)
+#define CTRL2_G_FS_G_500dps	(Bit2)
+#define CTRL2_G_FS_G_1000dps	(Bit3)
+#define CTRL2_G_FS_G_2000dps	(Bit3 | Bit2)
+
+#define CTRL3_C_BDU		(Bit6)
+#define CTRL3_C_IF_INC		(Bit2)
+#define CTRL3_C_BLE		(Bit1)
+#define CTRL3_C_SW_RESET	(Bit0)
+
+#define CTRL4_C_I2C_disable	(Bit2)
+
+#define STATUS_REG_TDA		(Bit2)
+#define STATUS_REG_GDA		(Bit1)
+#define STATUS_REG_XLDA		(Bit0)
+
+/* default values for this device */
+#define LSM6DS3_ACCEL_DEFAULT_RANGE_G			16
+#define LSM6DS3_ACCEL_DEFAULT_ODR			26
+
+#define LSM6DS3_GYRO_DEFAULT_RANGE_DPS			2000
+#define LSM6DS3_GYRO_DEFAULT_ODR			26
+
+/*
+  we set the timer interrupt to run a bit faster than the desired
+  sample rate and then throw away duplicates using the data ready bit.
+  This time reduction is enough to cope with worst case timing jitter
+  due to other timers
+ */
+#define LSM6DS3_TIMER_REDUCTION				200
 
 class LSM6DS3 : public device::SPI, public I2CSPIDriver<LSM6DS3>
 {
@@ -62,78 +158,119 @@ public:
 
 	void RunImpl();
 
-	int init() override;
+	int		init() override;
+
 	void print_status() override;
 
+protected:
+	int		probe() override;
 private:
-	void exit_and_cleanup() override;
 
-	// Sensor Configuration
-	static constexpr float FIFO_SAMPLE_DT{1e6f / ST_LSM6DS3::FIFO_ODR};
-	static constexpr float GYRO_RATE{ST_LSM6DS3::G_ODR};   // 833 Hz gyro
-	static constexpr float ACCEL_RATE{ST_LSM6DS3::LA_ODR}; // 833 Hz accel
+	void			start();
+	void			reset();
 
-	// maximum FIFO samples per transfer is limited to the size of sensor_accel_fifo/sensor_gyro_fifo
-	static constexpr int32_t FIFO_MAX_SAMPLES{math::min(math::min(FIFO::SIZE / 12, sizeof(sensor_gyro_fifo_s::x) / sizeof(sensor_gyro_fifo_s::x[0])), sizeof(sensor_accel_fifo_s::x) / sizeof(sensor_accel_fifo_s::x[0]) * (int)(GYRO_RATE / ACCEL_RATE))};
+	/**
+	 * check key registers for correct values
+	 */
+	void			check_registers(void);
 
-	struct register_config_t {
-		Register reg;
-		uint8_t set_bits{0};
-		uint8_t clear_bits{0};
-	};
+	/**
+	 * Read a register from the LSM6DS3
+	 *
+	 * @param		The register to read.
+	 * @return		The value that was read.
+	 */
+	uint8_t			read_reg(unsigned reg) override;
 
-	int probe() override;
+	/**
+	 * Write a register in the LSM6DS3
+	 *
+	 * @param reg		The register to write.
+	 * @param value		The new value to write.
+	 * @return		OK on success, negative errno otherwise.
+	 */
+	int			write_reg(unsigned reg, uint8_t value) override;
 
-	bool Reset();
+	/**
+	 * Modify a register in the LSM6DS3
+	 *
+	 * Bits are cleared before bits are set.
+	 *
+	 * @param reg		The register to modify.
+	 * @param clearbits	Bits in the register to clear.
+	 * @param setbits	Bits in the register to set.
+	 */
+	void			modify_reg(unsigned reg, uint8_t clearbits, uint8_t setbits);
 
-	bool Configure();
-	void ConfigureSampleRate(int sample_rate);
+	/**
+	 * Write a register in the LSM6DS3, updating _checked_values
+	 *
+	 * @param reg		The register to write.
+	 * @param value		The new value to write.
+	 */
+	void			write_checked_reg(unsigned reg, uint8_t value);
 
-	bool RegisterCheck(const register_config_t &reg_cfg);
+	/**
+	 * Set the LSM6DS3 accel measurement range.
+	 *
+	 * @param max_g	The measurement range of the accel is in g (9.81m/s^2)
+	 *			Zero selects the maximum supported range.
+	 * @return		OK if the value can be supported, -ERANGE otherwise.
+	 */
+	int			accel_set_range(unsigned max_g);
 
-	uint8_t RegisterRead(Register reg);
-	void RegisterWrite(Register reg, uint8_t value);
-	void RegisterSetAndClearBits(Register reg, uint8_t setbits, uint8_t clearbits);
+	/**
+	 * Set the LSM6DS3 gyro measurement range.
+	 *
+	 * @param max_ga	The measurement range of the gyro is in Ga
+	 *			Zero selects the maximum supported range.
+	 * @return		OK if the value can be supported, -ERANGE otherwise.
+	 */
+	int			gyro_set_range(unsigned max_g);
 
-	uint16_t FIFOReadCount();
-	bool FIFORead(const hrt_abstime &timestamp_sample, uint8_t samples);
-	void FIFOReset();
+	/**
+	 * Set the LSM6DS3 internal accel sampling frequency.
+	 *
+	 * @param frequency	The internal accel sampling frequency is set to not less than
+	 *			this value.
+	 *			Zero selects the maximum rate supported.
+	 * @return		OK if the value can be supported.
+	 */
+	int			accel_set_samplerate(unsigned frequency);
 
-	void UpdateTemperature();
+	/**
+	 * Set the LSM6DS3 internal gyro sampling frequency.
+	 *
+	 * @param frequency	The internal gyro sampling frequency is set to not less than
+	 *			this value.
+	 *			Zero selects the maximum rate supported.
+	 * @return		OK if the value can be supported.
+	 */
+	int			gyro_set_samplerate(unsigned frequency);
 
-	PX4Accelerometer _px4_accel;
-	PX4Gyroscope _px4_gyro;
 
-	perf_counter_t _bad_register_perf{perf_alloc(PC_COUNT, MODULE_NAME": bad register")};
-	perf_counter_t _bad_transfer_perf{perf_alloc(PC_COUNT, MODULE_NAME": bad transfer")};
-	perf_counter_t _fifo_empty_perf{perf_alloc(PC_COUNT, MODULE_NAME": FIFO empty")};
-	perf_counter_t _fifo_overflow_perf{perf_alloc(PC_COUNT, MODULE_NAME": FIFO overflow")};
-	perf_counter_t _fifo_reset_perf{perf_alloc(PC_COUNT, MODULE_NAME": FIFO reset")};
+	PX4Accelerometer	_px4_accel;
+	PX4Gyroscope		_px4_gyro;
 
-	hrt_abstime _reset_timestamp{0};
-	hrt_abstime _last_config_check_timestamp{0};
-	hrt_abstime _temperature_update_timestamp{0};
-	int _failure_count{0};
+	unsigned		_call_accel_interval{1000000 / LSM6DS3_ACCEL_DEFAULT_ODR};
+	unsigned		_call_gyro_interval{1000000 / LSM6DS3_GYRO_DEFAULT_ODR};
 
-	enum class STATE : uint8_t {
-		RESET,
-		WAIT_FOR_RESET,
-		CONFIGURE,
-		FIFO_READ,
-	} _state{STATE::RESET};
+	perf_counter_t		_accel_sample_perf;
+	perf_counter_t		_gyro_sample_perf;
+	perf_counter_t		_bad_registers;
+	perf_counter_t		_bad_values;
+	perf_counter_t		_accel_duplicates;
+	perf_counter_t		_gyro_duplicates;
 
-	uint16_t _fifo_empty_interval_us{1250}; // default 1250 us / 800 Hz transfer interval
-	int32_t _fifo_gyro_samples{static_cast<int32_t>(_fifo_empty_interval_us / (1000000 / GYRO_RATE))};
+	uint8_t			_register_wait{0};
 
-	uint8_t _checked_register{0};
-	static constexpr uint8_t size_register_cfg{3};
-	register_config_t _register_cfg[size_register_cfg] {
-		// Register               | Set bits, Clear bits
-		{ Register::CTRL1_XL, CTRL1_XL_BIT::ODR_XL_833HZ | CTRL1_XL_BIT::FS_XL_16, 0 },
-		{ Register::CTRL2_G, CTRL2_G_BIT::ODR_G_833HZ | CTRL2_G_BIT::FS_G_2000DPS, 0 },
-		{ Register::CTRL3_C, CTRL3_C_BIT::BDU | CTRL3_C_BIT::IF_ADD_INC, CTRL3_C_BIT::SW_RESET },
-		// { Register::CTRL4_C, CTRL4_C_BIT::I2C_DISABLE, 0 },
-		// { Register::FIFO_CTRL5, FIFO_CTRL5_BIT::ODR_FIFO_833HZ | FIFO_CTRL5_BIT::FMODE_CONTINUOUS, 0 },
-		// { Register::FIFO_CTRL3, FIFO_CTRL3_BIT::NO_DEC_FIFO_GYRO | FIFO_CTRL3_BIT::NO_DEC_FIFO_XL, 0 },
-	};
+	float			_last_temperature{0.0f};
+
+	// this is used to support runtime checking of key
+	// configuration registers to detect SPI bus errors and sensor
+	// reset
+	static constexpr int	LSM6DS3_NUM_CHECKED_REGISTERS{5};
+	uint8_t			_checked_values[LSM6DS3_NUM_CHECKED_REGISTERS] {};
+	uint8_t			_checked_next{0};
+
 };

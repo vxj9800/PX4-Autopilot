@@ -1,6 +1,6 @@
 ############################################################################
 #
-#   Copyright (c) 2020 PX4 Development Team. All rights reserved.
+#   Copyright (c) 2015 PX4 Development Team. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -36,10 +36,8 @@ px4_add_module(
 	MAIN lsm6ds3
 	COMPILE_FLAGS
 	SRCS
-		LSM6DS3.cpp
-		LSM6DS3.hpp
 		lsm6ds3_main.cpp
-		ST_LSM6DS3_Registers.hpp
+		LSM6DS3.cpp
 	DEPENDS
 		drivers_accelerometer
 		drivers_gyroscope

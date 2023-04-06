@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2020-2021 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2013-2019 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -31,457 +31,444 @@
  *
  ****************************************************************************/
 
+/**
+ * @file LSM6DS3.cpp
+ * Driver for the ST LSM6DS3 MEMS accelerometer / gyronetometer connected via SPI.
+ */
+
 #include "LSM6DS3.hpp"
 
-using namespace time_literals;
-
-static constexpr int16_t combine(uint8_t msb, uint8_t lsb)
-{
-	return (msb << 8u) | lsb;
-}
+/*
+  list of registers that will be checked in check_registers(). Note
+  that ADDR_WHO_AM_I must be first in the list.
+ */
+static constexpr uint8_t _checked_registers[] = {
+	ADDR_WHO_AM_I,
+	CTRL1_XL,
+	CTRL2_G,
+	CTRL3_C,
+	CTRL4_C,
+};
 
 LSM6DS3::LSM6DS3(const I2CSPIDriverConfig &config) :
 	SPI(config),
 	I2CSPIDriver(config),
 	_px4_accel(get_device_id(), config.rotation),
-	_px4_gyro(get_device_id(), config.rotation)
+	_px4_gyro(get_device_id(), config.rotation),
+	_accel_sample_perf(perf_alloc(PC_ELAPSED, "lsm6ds3: acc_read")),
+	_gyro_sample_perf(perf_alloc(PC_ELAPSED, "lsm6ds3: gyro_read")),
+	_bad_registers(perf_alloc(PC_COUNT, "lsm6ds3: bad_reg")),
+	_bad_values(perf_alloc(PC_COUNT, "lsm6ds3: bad_val")),
+	_accel_duplicates(perf_alloc(PC_COUNT, "lsm6ds3: acc_dupe"))
 {
-	ConfigureSampleRate(_px4_gyro.get_max_rate_hz());
 }
 
 LSM6DS3::~LSM6DS3()
 {
-	perf_free(_bad_register_perf);
-	perf_free(_bad_transfer_perf);
-	perf_free(_fifo_empty_perf);
-	perf_free(_fifo_overflow_perf);
-	perf_free(_fifo_reset_perf);
+	// delete the perf counter
+	perf_free(_accel_sample_perf);
+	perf_free(_gyro_sample_perf);
+	perf_free(_bad_registers);
+	perf_free(_bad_values);
+	perf_free(_accel_duplicates);
 }
 
-int LSM6DS3::init()
+int
+LSM6DS3::init()
 {
+	/* do SPI init (and probe) first */
 	int ret = SPI::init();
 
-	if (ret != PX4_OK) {
-		DEVICE_DEBUG("SPI::init failed (%i)", ret);
+	if (ret != OK) {
+		DEVICE_DEBUG("SPI init failed (%i)", ret);
 		return ret;
 	}
 
-	return Reset() ? 0 : -1;
+	reset();
+
+	start();
+
+	return ret;
 }
 
-bool LSM6DS3::Reset()
+void
+LSM6DS3::reset()
 {
-	_state = STATE::RESET;
-	ScheduleClear();
-	ScheduleNow();
-	return true;
+	// Disable I2C
+	write_checked_reg(CTRL4_C, CTRL4_C_I2C_disable);
+
+	// Enable  Block Data Update and auto address increment
+	write_checked_reg(CTRL3_C, CTRL3_C_BDU | CTRL3_C_IF_INC | CTRL3_C_BLE);
+
+	accel_set_range(LSM6DS3_ACCEL_DEFAULT_RANGE_G);
+	accel_set_samplerate(LSM6DS3_ACCEL_DEFAULT_ODR);
+
+	gyro_set_range(LSM6DS3_GYRO_DEFAULT_RANGE_DPS);
+	gyro_set_samplerate(LSM6DS3_GYRO_DEFAULT_ODR);
 }
 
-void LSM6DS3::exit_and_cleanup()
+int
+LSM6DS3::probe()
 {
-	I2CSPIDriverBase::exit_and_cleanup();
-}
+	// read dummy value to void to clear SPI statemachine on sensor
+	read_reg(ADDR_WHO_AM_I);
 
-void LSM6DS3::print_status()
-{
-	I2CSPIDriverBase::print_status();
-
-	PX4_INFO("FIFO empty interval: %d us (%.1f Hz)", _fifo_empty_interval_us, 1e6 / _fifo_empty_interval_us);
-
-	perf_print_counter(_bad_register_perf);
-	perf_print_counter(_bad_transfer_perf);
-	perf_print_counter(_fifo_empty_perf);
-	perf_print_counter(_fifo_overflow_perf);
-	perf_print_counter(_fifo_reset_perf);
-}
-
-int LSM6DS3::probe()
-{
-	const uint8_t whoami = RegisterRead(Register::WHO_AM_I);
-
-	if (whoami != WHO_AM_I_ID) {
-		DEVICE_DEBUG("unexpected WHO_AM_I 0x%02x", whoami);
-		return PX4_ERROR;
+	// verify that the device is attached and functioning
+	if (read_reg(ADDR_WHO_AM_I) == WHO_I_AM) {
+		_checked_values[0] = WHO_I_AM;
+		return OK;
 	}
 
-	return PX4_OK;
+	return -EIO;
 }
 
-void LSM6DS3::RunImpl()
-{
-	const hrt_abstime now = hrt_absolute_time();
-
-	switch (_state) {
-	case STATE::RESET:
-		// PWR_MGMT_1: Device Reset
-		RegisterWrite(Register::CTRL3_C, CTRL3_C_BIT::SW_RESET);
-		_reset_timestamp = now;
-		_failure_count = 0;
-		_state = STATE::WAIT_FOR_RESET;
-		ScheduleDelayed(100_ms);
-		break;
-
-	case STATE::WAIT_FOR_RESET:
-		if ((RegisterRead(Register::WHO_AM_I) == WHO_AM_I_ID)) {
-
-			// Disable I2C, wakeup, and reset digital signal path
-			RegisterWrite(Register::CTRL4_C, CTRL4_C_BIT::I2C_DISABLE); // set immediately to prevent switching into I2C mode
-
-			// if reset succeeded then configure
-			_state = STATE::CONFIGURE;
-			ScheduleDelayed(100_ms);
-
-		} else {
-			// RESET not complete
-			if (hrt_elapsed_time(&_reset_timestamp) > 1000_ms) {
-				PX4_DEBUG("Reset failed, retrying");
-				_state = STATE::RESET;
-				ScheduleDelayed(100_ms);
-
-			} else {
-				PX4_DEBUG("Reset not complete, check again in 10 ms");
-				ScheduleDelayed(10_ms);
-			}
-		}
-
-		break;
-
-	case STATE::CONFIGURE:
-		if (Configure()) {
-			// if configure succeeded then start reading from FIFO
-			_state = STATE::FIFO_READ;
-			ScheduleOnInterval(_fifo_empty_interval_us, _fifo_empty_interval_us);
-			FIFOReset();
-		} else {
-			// CONFIGURE not complete
-			if (hrt_elapsed_time(&_reset_timestamp) > 1000_ms) {
-				PX4_DEBUG("Configure failed, resetting");
-				_state = STATE::RESET;
-
-			} else {
-				PX4_DEBUG("Configure failed, retrying");
-			}
-
-			ScheduleDelayed(100_ms);
-		}
-
-		break;
-
-	case STATE::FIFO_READ: {
-			hrt_abstime timestamp_sample = now;
-
-			// always check current FIFO count
-			bool success = false;
-
-			// Number of unread words (16-bit axes) stored in FIFO.
-			// uint8_t fifoStatus1 = RegisterRead(Register::FIFO_STATUS1);
-			// uint8_t fifoStatus2 = RegisterRead(Register::FIFO_STATUS2);
-			uint8_t fifoStatus2 = 0;
-
-			// Number of unread words (16-bit axes) stored in FIFO.
-			// uint16_t samples = combine(fifoStatus2,fifoStatus1) & 0x7ff;
-			uint8_t samples = 1;
-
-			if (fifoStatus2 & FIFO_STATUS2_BIT::OVRN) {
-				// overflow
-				FIFOReset();
-				perf_count(_fifo_overflow_perf);
-
-			} else if (samples == 0) {
-				perf_count(_fifo_empty_perf);
-
-			} else {
-				// tolerate minor jitter, leave sample to next iteration if behind by only 1
-				if (samples == _fifo_gyro_samples + 1) {
-					timestamp_sample -= static_cast<int>(FIFO_SAMPLE_DT);
-					samples--;
-				}
-
-				if (samples > FIFO_MAX_SAMPLES) {
-					// not technically an overflow, but more samples than we expected or can publish
-					FIFOReset();
-					perf_count(_fifo_overflow_perf);
-
-				} else if (samples >= 1) {
-					if (FIFORead(timestamp_sample, samples)) {
-						success = true;
-
-						if (_failure_count > 0) {
-							_failure_count--;
-						}
-					}
-				}
-			}
-
-			if (!success) {
-				_failure_count++;
-
-				// full reset if things are failing consistently
-				if (_failure_count > 10) {
-					Reset();
-					return;
-				}
-			}
-
-			if (!success || hrt_elapsed_time(&_last_config_check_timestamp) > 100_ms) {
-				// check configuration registers periodically or immediately following any failure
-				if (RegisterCheck(_register_cfg[_checked_register])) {
-					_last_config_check_timestamp = now;
-					_checked_register = (_checked_register + 1) % size_register_cfg;
-
-				} else {
-					// register check failed, force reset
-					perf_count(_bad_register_perf);
-					Reset();
-				}
-
-			} else {
-				// periodically update temperature (~1 Hz)
-				if (hrt_elapsed_time(&_temperature_update_timestamp) >= 1_s) {
-					UpdateTemperature();
-					_temperature_update_timestamp = now;
-				}
-			}
-		}
-
-		break;
-	}
-}
-
-void LSM6DS3::ConfigureSampleRate(int sample_rate)
-{
-	// round down to nearest FIFO sample dt
-	const float min_interval = FIFO_SAMPLE_DT;
-	_fifo_empty_interval_us = math::max(roundf((1e6f / (float)sample_rate) / min_interval) * min_interval, min_interval);
-
-	_fifo_gyro_samples = roundf(math::min((float)_fifo_empty_interval_us / (1e6f / GYRO_RATE), (float)FIFO_MAX_SAMPLES));
-
-	// recompute FIFO empty interval (us) with actual gyro sample limit
-	_fifo_empty_interval_us = _fifo_gyro_samples * (1e6f / GYRO_RATE);
-}
-
-bool LSM6DS3::Configure()
-{
-	// first set and clear all configured register bits
-	for (const auto &reg_cfg : _register_cfg) {
-		RegisterSetAndClearBits(reg_cfg.reg, reg_cfg.set_bits, reg_cfg.clear_bits);
-	}
-
-	// Flush out fifo, i.e. all four data-sets
-	// uint8_t sndData[1] = {static_cast<uint8_t>(Register::FIFO_DATA_OUT_L) | DIR_READ};
-	// uint8_t recData[2];
-	// for (int i = 0; i < 12; ++i)
-	// 	transfer(sndData,recData,3);
-
-	// now check that all are configured
-	bool success = true;
-
-	for (const auto &reg_cfg : _register_cfg) {
-		if (!RegisterCheck(reg_cfg)) {
-			success = false;
-		}
-	}
-
-	// Gyroscope configuration 2000 degrees/second
-	_px4_gyro.set_scale(math::radians(70.f / 1000.f)); // 70 mdps/LSB
-	_px4_gyro.set_range(math::radians(2000.f));
-
-	// Accelerometer configuration 16 G range
-	_px4_accel.set_scale(0.488f * (CONSTANTS_ONE_G / 1000.f)); // 0.488 mg/LSB specified in the datasheet
-	_px4_accel.set_range(16.f * CONSTANTS_ONE_G);
-
-	return success;
-}
-
-bool LSM6DS3::RegisterCheck(const register_config_t &reg_cfg)
-{
-	bool success = true;
-
-	const uint8_t reg_value = RegisterRead(reg_cfg.reg);
-
-	if (reg_cfg.set_bits && ((reg_value & reg_cfg.set_bits) != reg_cfg.set_bits)) {
-		PX4_DEBUG("0x%02hhX: 0x%02hhX (0x%02hhX not set)", (uint8_t)reg_cfg.reg, reg_value, reg_cfg.set_bits);
-		success = false;
-	}
-
-	if (reg_cfg.clear_bits && ((reg_value & reg_cfg.clear_bits) != 0)) {
-		PX4_DEBUG("0x%02hhX: 0x%02hhX (0x%02hhX not cleared)", (uint8_t)reg_cfg.reg, reg_value, reg_cfg.clear_bits);
-		success = false;
-	}
-
-	return success;
-}
-
-uint8_t LSM6DS3::RegisterRead(Register reg)
+uint8_t
+LSM6DS3::read_reg(unsigned reg)
 {
 	uint8_t cmd[2] {};
-	cmd[0] = static_cast<uint8_t>(reg) | DIR_READ;
+	cmd[0] = reg | DIR_READ;
+
 	transfer(cmd, cmd, sizeof(cmd));
+
 	return cmd[1];
 }
 
-void LSM6DS3::RegisterWrite(Register reg, uint8_t value)
+int
+LSM6DS3::write_reg(unsigned reg, uint8_t value)
 {
-	uint8_t cmd[2] { (uint8_t)reg, value };
-	transfer(cmd, cmd, sizeof(cmd));
+	uint8_t	cmd[2] {};
+
+	cmd[0] = reg | DIR_WRITE;
+	cmd[1] = value;
+
+	return transfer(cmd, nullptr, sizeof(cmd));
 }
 
-void LSM6DS3::RegisterSetAndClearBits(Register reg, uint8_t setbits, uint8_t clearbits)
+void
+LSM6DS3::write_checked_reg(unsigned reg, uint8_t value)
 {
-	const uint8_t orig_val = RegisterRead(reg);
+	write_reg(reg, value);
 
-	uint8_t val = (orig_val & ~clearbits) | setbits;
-
-	if (orig_val != val) {
-		RegisterWrite(reg, val);
-	}
-}
-
-bool LSM6DS3::FIFORead(const hrt_abstime &timestamp_sample, uint8_t samples)
-{
-	sensor_gyro_fifo_s gyro{};
-	gyro.timestamp_sample = timestamp_sample;
-	gyro.samples = 0;
-	gyro.dt = FIFO_SAMPLE_DT;
-
-	sensor_accel_fifo_s accel{};
-	accel.timestamp_sample = timestamp_sample;
-	accel.samples = 0;
-	accel.dt = FIFO_SAMPLE_DT;
-
-	// Read fifo pattern, flush fifo if pattern value is not zero
-	// Working on the assumption that all ACC/GYRO data will  arrive at the same time
-	// Should not happen, but implemented for safety
-	// Number of unread words (16-bit axes) stored in FIFO.
-	// uint8_t transBuf[5];
-	// uint8_t pattern;
-
-	// do {
-	// 	// Read FIFO status registers
-	// 	transBuf[0] = static_cast<uint8_t>(Register::FIFO_STATUS1) | DIR_READ;
-	// 	transfer(transBuf,transBuf,5);
-
-	// 	// Number of unread words (16-bit axes) stored in FIFO.
-	// 	samples = combine(transBuf[2],transBuf[1]) & 0x7ff;
-	// 	pattern = combine(transBuf[4],transBuf[3]);
-
-	// 	if (pattern)
-	// 	{
-	// 		transBuf[0] = static_cast<uint8_t>(Register::FIFO_DATA_OUT_L) | DIR_READ;
-	// 		transfer(transBuf,transBuf,3);
-	// 	}
-	// } while (samples && pattern);
-
-	// samples here represents number of unread words (16-bit axes) stored in FIFO.
-	// Thus, divide it by 6 to get the number of timestamp samples.
-	// samples /= 6;
-
-	for (int i = 0; i < samples; i++) {
-		{
-			struct GyroTransferBuffer {
-				uint8_t cmd{static_cast<uint8_t>(Register::OUT_X_L_G) | DIR_READ};
-				uint8_t OUT_X_L_G{0};
-				uint8_t OUT_X_H_G{0};
-				uint8_t OUT_Y_L_G{0};
-				uint8_t OUT_Y_H_G{0};
-				uint8_t OUT_Z_L_G{0};
-				uint8_t OUT_Z_H_G{0};
-			} buffer{};
-
-			if (transfer((uint8_t *)&buffer, (uint8_t *)&buffer, sizeof(buffer)) == PX4_OK) {
-				const int16_t gyro_x = combine(buffer.OUT_X_H_G, buffer.OUT_X_L_G);
-				const int16_t gyro_y = combine(buffer.OUT_Y_H_G, buffer.OUT_Y_L_G);
-				const int16_t gyro_z = combine(buffer.OUT_Z_H_G, buffer.OUT_Z_L_G);
-
-				// sensor's frame is +x forward, +y left, +z up
-				//  flip y & z to publish right handed with z down (x forward, y right, z down)
-				gyro.x[gyro.samples] = gyro_x;
-				gyro.y[gyro.samples] = gyro_y;
-				gyro.z[gyro.samples] = (gyro_z == INT16_MIN) ? INT16_MAX : -gyro_z;
-				gyro.samples++;
-
-			} else {
-				perf_count(_bad_transfer_perf);
-			}
-		}
-
-		{
-			struct AccelTransferBuffer {
-				uint8_t cmd{static_cast<uint8_t>(Register::OUT_X_L_XL) | DIR_READ};
-				uint8_t OUT_X_L_XL{0};
-				uint8_t OUT_X_H_XL{0};
-				uint8_t OUT_Y_L_XL{0};
-				uint8_t OUT_Y_H_XL{0};
-				uint8_t OUT_Z_L_XL{0};
-				uint8_t OUT_Z_H_XL{0};
-			} buffer{};
-
-			if (transfer((uint8_t *)&buffer, (uint8_t *)&buffer, sizeof(buffer)) == PX4_OK) {
-				const int16_t accel_x = combine(buffer.OUT_X_H_XL, buffer.OUT_X_L_XL);
-				const int16_t accel_y = combine(buffer.OUT_Y_H_XL, buffer.OUT_Y_L_XL);
-				const int16_t accel_z = combine(buffer.OUT_Z_H_XL, buffer.OUT_Z_L_XL);
-
-				// sensor's frame is +x forward, +y left, +z up
-				//  flip y & z to publish right handed with z down (x forward, y right, z down)
-				accel.x[accel.samples] = accel_x;
-				accel.y[accel.samples] = accel_y;
-				accel.z[accel.samples] = (accel_z == INT16_MIN) ? INT16_MAX : -accel_z;
-				accel.samples++;
-
-			} else {
-				perf_count(_bad_transfer_perf);
-			}
+	for (uint8_t i = 0; i < LSM6DS3_NUM_CHECKED_REGISTERS; i++) {
+		if (reg == _checked_registers[i]) {
+			_checked_values[i] = value;
 		}
 	}
-
-	if (gyro.samples > 0) {
-		_px4_gyro.set_error_count(perf_event_count(_bad_register_perf) + perf_event_count(_bad_transfer_perf) +
-					  perf_event_count(_fifo_empty_perf) + perf_event_count(_fifo_overflow_perf));
-		_px4_gyro.updateFIFO(gyro);
-	}
-
-	if (accel.samples > 0) {
-		_px4_accel.set_error_count(perf_event_count(_bad_register_perf) + perf_event_count(_bad_transfer_perf) +
-					   perf_event_count(_fifo_empty_perf) + perf_event_count(_fifo_overflow_perf));
-		_px4_accel.updateFIFO(accel);
-	}
-
-	return (accel.samples > 0) && (gyro.samples > 0);
 }
 
-void LSM6DS3::FIFOReset()
+void
+LSM6DS3::modify_reg(unsigned reg, uint8_t clearbits, uint8_t setbits)
 {
-	perf_count(_fifo_reset_perf);
-
-	// FIFO_CTRL5: to reset FIFO content, Bypass mode (0) should be selected
-	// RegisterSetAndClearBits(Register::FIFO_CTRL5,0,FIFO_CTRL5_BIT::FMODE_CONTINUOUS);
-
-
-	// After this reset command, it is possible to restart FIFO mode by writing FIFO_CTRL5 (FMODE [2:0]) to '001'.
-	// RegisterSetAndClearBits(Register::FIFO_CTRL5,FIFO_CTRL5_BIT::FMODE_CONTINUOUS,0);
+	uint8_t	val = read_reg(reg);
+	val &= ~clearbits;
+	val |= setbits;
+	write_checked_reg(reg, val);
 }
 
-void LSM6DS3::UpdateTemperature()
+int
+LSM6DS3::accel_set_range(unsigned max_g)
 {
-	// read current temperature
-	struct TransferBuffer {
-		uint8_t cmd{static_cast<uint8_t>(Register::OUT_TEMP_L) | DIR_READ};
-		uint8_t OUT_TEMP_L{0};
-		uint8_t OUT_TEMP_H{0};
-	} buffer{};
+	uint8_t setbits = 0;
+	uint8_t clearbits = CTRL1_XL_FS_XL_BITS;
+	float new_scale_g_digit = 0.0f;
 
-	if (transfer((uint8_t *)&buffer, (uint8_t *)&buffer, sizeof(buffer)) != PX4_OK) {
-		perf_count(_bad_transfer_perf);
+	if (max_g == 0) {
+		max_g = LSM6DS3_ACCEL_DEFAULT_RANGE_G;
+	}
+
+	if (max_g <= 2) {
+		// accel_range_m_s2 = 2.0f * CONSTANTS_ONE_G;
+		setbits |= CTRL1_XL_FS_XL_2g;
+		new_scale_g_digit = 0.061e-3f;
+
+	} else if (max_g <= 4) {
+		// accel_range_m_s2 = 4.0f * CONSTANTS_ONE_G;
+		setbits |= CTRL1_XL_FS_XL_4g;
+		new_scale_g_digit = 0.122e-3f;
+
+	} else if (max_g <= 8) {
+		// accel_range_m_s2 = 8.0f * CONSTANTS_ONE_G;
+		setbits |= CTRL1_XL_FS_XL_8g;
+		new_scale_g_digit = 0.244e-3f;
+
+	} else if (max_g <= 16) {
+		// accel_range_m_s2 = 16.0f * CONSTANTS_ONE_G;
+		setbits |= CTRL1_XL_FS_XL_16g;
+		new_scale_g_digit = 0.488e-3f;
+
+	} else {
+		return -EINVAL;
+	}
+
+	float accel_range_scale = new_scale_g_digit * CONSTANTS_ONE_G;
+
+	_px4_accel.set_scale(accel_range_scale);
+
+	modify_reg(CTRL1_XL, clearbits, setbits);
+
+	return OK;
+}
+
+int
+LSM6DS3::gyro_set_range(unsigned max_dps)
+{
+	uint8_t setbits = 0;
+	uint8_t clearbits = CTRL2_G_FS_G_BITS;
+	float new_scale_dps_digit = 0.0f;
+
+	if (max_dps == 0) {
+		max_dps = LSM6DS3_GYRO_DEFAULT_RANGE_DPS;
+	}
+
+	if (max_dps <= 125) {
+		// gyro_range_dps = 125;
+		setbits |= CTRL2_G_FS_G_125dps;
+		new_scale_dps_digit = 4.375e-3f;
+
+	} else if (max_dps <= 250) {
+		// gyro_range_dps = 250;
+		setbits |= CTRL2_G_FS_G_250dps;
+		new_scale_dps_digit = 8.75e-3f;
+
+	} else if (max_dps <= 500) {
+		// gyro_range_dps = 500;
+		setbits |= CTRL2_G_FS_G_500dps;
+		new_scale_dps_digit = 17.50e-3f;
+
+	} else if (max_dps <= 1000) {
+		// gyro_range_dps = 1000;
+		setbits |= CTRL2_G_FS_G_1000dps;
+		new_scale_dps_digit = 35e-3f;
+
+	} else if (max_dps <= 2000) {
+		// gyro_range_dps = 2000;
+		setbits |= CTRL2_G_FS_G_2000dps;
+		new_scale_dps_digit = 70e-3f;
+
+	} else {
+		return -EINVAL;
+	}
+
+	_px4_gyro.set_scale(new_scale_dps_digit);
+
+	modify_reg(CTRL2_G, clearbits, setbits);
+
+	return OK;
+}
+
+int
+LSM6DS3::accel_set_samplerate(unsigned frequency)
+{
+	uint8_t setbits = 0;
+	uint8_t clearbits = CTRL1_XL_ODR_XL_BITS;
+
+	if (frequency == 0) {
+		frequency = LSM6DS3_ACCEL_DEFAULT_ODR;
+	}
+
+	int accel_samplerate = 26;
+
+	if (frequency <= 26) {
+		setbits |= CTRL1_XL_ODR_XL_26Hz;
+		accel_samplerate = 26;
+
+	} else if (frequency <= 52) {
+		setbits |= CTRL1_XL_ODR_XL_52Hz;
+		accel_samplerate = 52;
+
+	} else if (frequency <= 104) {
+		setbits |= CTRL1_XL_ODR_XL_104Hz;
+		accel_samplerate = 104;
+
+	} else if (frequency <= 208) {
+		setbits |= CTRL1_XL_ODR_XL_208Hz;
+		accel_samplerate = 208;
+
+	} else if (frequency <= 416) {
+		setbits |= CTRL1_XL_ODR_XL_416Hz;
+		accel_samplerate = 416;
+
+	} else if (frequency <= 833) {
+		setbits |= CTRL1_XL_ODR_XL_833Hz;
+		accel_samplerate = 833;
+
+	} else {
+		return -EINVAL;
+	}
+
+	_call_accel_interval = 1000000 / accel_samplerate;
+
+	modify_reg(CTRL1_XL, clearbits, setbits);
+
+	return OK;
+}
+
+int
+LSM6DS3::gyro_set_samplerate(unsigned frequency)
+{
+	uint8_t setbits = 0;
+	uint8_t clearbits = CTRL2_G_ODR_G_BITS;
+
+	if (frequency == 0) {
+		frequency = LSM6DS3_GYRO_DEFAULT_ODR;
+	}
+
+	int gyro_samplerate = 26;
+
+	if (frequency <= 26) {
+		setbits |= CTRL2_G_ODR_G_26Hz;
+		gyro_samplerate = 26;
+
+	} else if (frequency <= 52) {
+		setbits |= CTRL2_G_ODR_G_52Hz;
+		gyro_samplerate = 52;
+
+	} else if (frequency <= 104) {
+		setbits |= CTRL2_G_ODR_G_104Hz;
+		gyro_samplerate = 104;
+
+	} else if (frequency <= 208) {
+		setbits |= CTRL2_G_ODR_G_208Hz;
+		gyro_samplerate = 208;
+
+	} else if (frequency <= 416) {
+		setbits |= CTRL2_G_ODR_G_416Hz;
+		gyro_samplerate = 416;
+
+	} else if (frequency <= 833) {
+		setbits |= CTRL2_G_ODR_G_833Hz;
+		gyro_samplerate = 833;
+
+	} else {
+		return -EINVAL;
+	}
+
+	_call_gyro_interval = 1000000 / gyro_samplerate;
+
+	modify_reg(CTRL2_G, clearbits, setbits);
+
+	return OK;
+}
+
+void
+LSM6DS3::start()
+{
+	// start polling at the specified rate
+	ScheduleOnInterval(_call_accel_interval - LSM6DS3_TIMER_REDUCTION);
+}
+
+void
+LSM6DS3::RunImpl()
+{
+	// make measurement
+	perf_begin(_accel_sample_perf);
+	perf_begin(_gyro_sample_perf);
+
+	// status register and data as read back from the device
+#pragma pack(push, 1)
+	struct {
+		uint8_t		cmd;
+		uint8_t		status;
+		int16_t		temperature;
+		int16_t		gx;
+		int16_t		gy;
+		int16_t		gz;
+		int16_t		ax;
+		int16_t		ay;
+		int16_t		az;
+	} data_report{};
+#pragma pack(pop)
+
+	check_registers();
+
+	if (_register_wait != 0) {
+		// we are waiting for some good transfers before using
+		// the sensor again.
+		_register_wait--;
+		perf_end(_accel_sample_perf);
+		perf_end(_gyro_sample_perf);
 		return;
 	}
 
-	// 16 bits in two’s complement format with a sensitivity of 256 LSB/°C. The output zero level corresponds to 25 °C.
-	const int16_t OUT_TEMP = combine(buffer.OUT_TEMP_H, buffer.OUT_TEMP_L);
-	const float temperature = (OUT_TEMP / 256.0f) + 25.0f;
+	/* fetch data from the sensor */
+	const hrt_abstime timestamp_sample = hrt_absolute_time();
+	data_report.cmd = STATUS_REG | DIR_READ;
+	transfer((uint8_t *)&data_report, (uint8_t *)&data_report, sizeof(data_report));
 
-	if (PX4_ISFINITE(temperature)) {
-		_px4_accel.set_temperature(temperature);
-		_px4_gyro.set_temperature(temperature);
+	if (!(data_report.status & (STATUS_REG_GDA | STATUS_REG_XLDA))) {
+		perf_end(_accel_sample_perf);
+		perf_end(_gyro_sample_perf);
+		perf_count(_accel_duplicates);
+		perf_count(_gyro_duplicates);
+		return;
+	}
+
+	_last_temperature = 25.0f + (data_report.temperature / 256.0f);
+	_px4_accel.set_temperature(_last_temperature);
+	_px4_gyro.set_temperature(_last_temperature);
+
+	// report the error count as the sum of the number of bad
+	// register reads and bad values. This allows the higher level
+	// code to decide if it should use this sensor based on
+	// whether it has had failures
+	_px4_accel.set_error_count(perf_event_count(_bad_registers) + perf_event_count(_bad_values));
+	_px4_accel.update(timestamp_sample, data_report.ax, data_report.ay, data_report.az);
+	_px4_gyro.update(timestamp_sample, data_report.gx, data_report.gy, data_report.gz);
+
+	perf_end(_accel_sample_perf);
+	perf_end(_gyro_sample_perf);
+}
+
+void
+LSM6DS3::check_registers(void)
+{
+	uint8_t v = 0;
+
+	if ((v = read_reg(_checked_registers[_checked_next])) != _checked_values[_checked_next]) {
+		/*
+		  if we get the wrong value then we know the SPI bus
+		  or sensor is very sick. We set _register_wait to 20
+		  and wait until we have seen 20 good values in a row
+		  before we consider the sensor to be OK again.
+		 */
+		perf_count(_bad_registers);
+
+		/*
+		  try to fix the bad register value. We only try to
+		  fix one per loop to prevent a bad sensor hogging the
+		  bus. We skip zero as that is the WHO_AM_I, which
+		  is not writeable
+		 */
+		if (_checked_next != 0) {
+			write_reg(_checked_registers[_checked_next], _checked_values[_checked_next]);
+		}
+
+		_register_wait = 20;
+	}
+
+	_checked_next = (_checked_next + 1) % LSM6DS3_NUM_CHECKED_REGISTERS;
+}
+
+void
+LSM6DS3::print_status()
+{
+	I2CSPIDriverBase::print_status();
+	perf_print_counter(_accel_sample_perf);
+	perf_print_counter(_gyro_sample_perf);
+	perf_print_counter(_bad_registers);
+	perf_print_counter(_bad_values);
+	perf_print_counter(_accel_duplicates);
+
+	::printf("checked_next: %u\n", _checked_next);
+
+	for (uint8_t i = 0; i < LSM6DS3_NUM_CHECKED_REGISTERS; i++) {
+		uint8_t v = read_reg(_checked_registers[i]);
+
+		if (v != _checked_values[i]) {
+			::printf("reg %02x:%02x should be %02x\n",
+				 (unsigned)_checked_registers[i],
+				 (unsigned)v,
+				 (unsigned)_checked_values[i]);
+		}
 	}
 }
