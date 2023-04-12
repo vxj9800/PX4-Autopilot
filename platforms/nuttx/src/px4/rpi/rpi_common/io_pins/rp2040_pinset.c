@@ -12,11 +12,11 @@ int rp2040_gpioconfig(uint32_t pinset)
 		return -EINVAL;
 	}
 
-	rp2040_gpio_set_pulls(pinset & GPIO_NUM_MASK, pinset & GPIO_PU_MASK, pinset & GPIO_PD_MASK);
+	rp2040_gpio_set_pulls(pinset & GPIO_NUM_MASK, (pinset & GPIO_PU_MASK) >> 5, (pinset & GPIO_PD_MASK) >> 6);
 
 	if ((pinset & GPIO_FUN_MASK) >> 9 == RP2040_GPIO_FUNC_SIO) {
-		rp2040_gpio_setdir(pinset & GPIO_NUM_MASK, pinset & GPIO_OUT_MASK);
-		rp2040_gpio_put(pinset & GPIO_NUM_MASK, pinset & GPIO_SET_MASK);
+		rp2040_gpio_setdir(pinset & GPIO_NUM_MASK, (pinset & GPIO_OUT_MASK) >> 7);
+		rp2040_gpio_put(pinset & GPIO_NUM_MASK, (pinset & GPIO_SET_MASK) >> 8);
 	}
 
 	rp2040_gpio_set_function(pinset & GPIO_NUM_MASK, (pinset & GPIO_FUN_MASK) >> 9);
