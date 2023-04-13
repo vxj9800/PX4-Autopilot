@@ -9,4 +9,4 @@ board_adc start
 # lsm6ds3 start -s
 
 # try starting DPS310XTSA1 barometer on SPI
-dps310 start -s
+# dps310 start -s
